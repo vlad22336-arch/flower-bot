@@ -27,7 +27,6 @@ def product_card_kb(
     """Клавиатура карточки товара с пагинацией."""
     builder = InlineKeyboardBuilder()
 
-    # Навигация
     prev_index = (current_index - 1) % total
     next_index = (current_index + 1) % total
 
@@ -35,7 +34,6 @@ def product_card_kb(
     builder.button(text=f"{current_index + 1}/{total}", callback_data="noop")
     builder.button(text="▶️", callback_data=f"product:{category_id}:{next_index}")
 
-    # Действия
     builder.button(text="➕ В корзину", callback_data=f"add_to_cart:{product_id}")
     builder.button(text="◀️ В меню", callback_data="main_menu")
 
@@ -88,4 +86,14 @@ def confirm_order_kb() -> InlineKeyboardMarkup:
     builder.button(text="✅ Подтвердить", callback_data="confirm_order")
     builder.button(text="❌ Отмена", callback_data="cart")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def confirm_order_with_promo_kb() -> InlineKeyboardMarkup:
+    """Клавиатура подтверждения заказа с возможностью ввести промокод."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Подтвердить заказ", callback_data="confirm_order")
+    builder.button(text="🎟 Ввести промокод", callback_data="enter_promo")
+    builder.button(text="⬅️ Назад в корзину", callback_data="cart")
+    builder.adjust(1)
     return builder.as_markup()
