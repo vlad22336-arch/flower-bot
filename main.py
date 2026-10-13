@@ -14,9 +14,13 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN
 from handlers import setup_routers
+from data.database import init_db
 
 
 async def main():
+    # Инициализируем базу данных
+    await init_db()
+
     if not BOT_TOKEN:
         print("❌ Ошибка: BOT_TOKEN не задан!")
         print("Создайте файл .env и добавьте строку:")
