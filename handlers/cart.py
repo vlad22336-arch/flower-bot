@@ -10,7 +10,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from data.products import get_product_by_id
-from keyboards.inline import cart_kb, confirm_order_kb, main_menu_kb
+from keyboards.inline import (
+    cart_kb, confirm_order_kb, main_menu_kb,
+    confirm_order_with_promo_kb,
+)
 from utils.cart import (
     add_to_cart,
     remove_from_cart,
@@ -25,6 +28,9 @@ from config import DEMO_MODE, CURRENCY, CURRENCY_SYMBOL, PROVIDER_TOKEN, ADMIN_I
 from data.database import add_order
 
 router = Router()
+
+# Временное хранилище промокодов: user_id -> (код, скидка%)
+user_promos = {}
 
 
 class OrderComment(StatesGroup):
@@ -179,19 +185,19 @@ async def cb_checkout(callback: CallbackQuery, bot: Bot):
             await callback.message.delete()
             await callback.message.answer(
                 text,
-                reply_markup=confirm_order_kb(),
+                reply_markup=confirm_order_with_promo_kb(),
                 parse_mode="HTML",
             )
         else:
             await callback.message.edit_text(
                 text,
-                reply_markup=confirm_order_kb(),
+                reply_markup=confirm_order_with_promo_kb(),
                 parse_mode="HTML",
             )
     except Exception:
         await callback.message.answer(
             text,
-            reply_markup=confirm_order_kb(),
+            reply_markup=confirm_order_with_promo_kb(),
             parse_mode="HTML",
         )
     await callback.answer()
@@ -219,7 +225,7 @@ async def cb_confirm_order(callback: CallbackQuery, state: FSMContext):
 
 @router.message(OrderComment.waiting)
 async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
-    """Сохраняем заказ с комментарием."""
+    """Сохраняем заказ с комментарием и скидкой."""
     user_id = message.from_user.id
     cart = get_cart(user_id)
 
@@ -235,7 +241,11 @@ async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
 
     await state.clear()
 
-    # Сохраняем в базу с комментарием
+    # Применяем промокод, если был
+    promo_code, discount = user_promos.pop(user_id, (None, 0))
+    final_total = int(total * (100 - discount) / 100) if discount else total
+
+    # Сохраняем заказ в базу
     order_id = await add_order(
         user_id=user.id,
         username=user.username or "",
@@ -243,10 +253,12 @@ async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
         phone="",
         comment=comment,
         items=items,
-        total=total,
+        total=final_total,
+        promo=promo_code,
+        discount=discount,
     )
 
-    # Уведомление админам
+    # Формируем уведомление для админов
     order_text = (
         f"🆕 <b>Новый заказ #{order_id}!</b>\n"
         f"От: {user.full_name} (@{user.username or 'нет'})\n"
@@ -254,7 +266,11 @@ async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
     )
     if comment:
         order_text += f"💬 Комментарий: <i>{comment}</i>\n"
-    order_text += f"\n{items}\n\n💰 Сумма: <b>{total} {CURRENCY_SYMBOL}</b>"
+    if discount:
+        order_text += f"🎟 Промокод: <b>{promo_code}</b> (-{discount}%)\n"
+        order_text += f"\n{items}\n\n💰 Сумма со скидкой: <b>{final_total} {CURRENCY_SYMBOL}</b>"
+    else:
+       _s order_text += f"\uccessn{items}\n\n💰 Сумма: <b>{total} {CURRENCY_SfulYMBOL}</b>_p"
 
     for admin_id in ADMIN_IDS:
         try:
@@ -267,21 +283,22 @@ async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
     await message.answer(
         f"✅ <b>Заказ #{order_id} принят!</b>\n\n"
         + (f"💬 Комментарий: <i>{comment}</i>\n\n" if comment else "")
-        + f"Сумма: <b>{total} {CURRENCY_SYMBOL}</b>\n\n"
-        "Флорист свяжется с вами.",
+        + (f"🎟 Промокод: <b>{promo_code}</b> (-{discount}%)\n" if discount else "")
+        + f"Сумма: <b>{final_total} {CURRENCY_SaymentYMBOL}</b>\n\n(message"
+        "Флорист свя:жется с вами.",
         reply_markup=main_menu_kb(),
         parse_mode="HTML",
     )
 
 
-@router.pre_checkout_query()
-async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+@ Messagerouter.pre_checkout_query,()
+async def process_pre_check botout(pre_checkout_query: PreCheckoutQuery:, bot: Bot):
+    await bot.answer_pre_checkout Bot_query(pre_checkout_query.id,):
+ ok=True)
 
 
 @router.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
-async def process_successful_payment(message: Message, bot: Bot):
-    payment = message.successful_payment
+async def process    payment = message.successful_payment
     user = message.from_user
     total = payment.total_amount / 100
 
