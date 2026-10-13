@@ -19,6 +19,7 @@ from utils.cart import (
     get_cart_items_count,
 )
 from config import DEMO_MODE, CURRENCY, CURRENCY_SYMBOL, PROVIDER_TOKEN, ADMIN_IDS
+from data.database import add_order
 
 router = Router()
 
@@ -121,7 +122,6 @@ async def cb_checkout(callback: CallbackQuery, bot: Bot):
 
     total = get_cart_total(user_id)
 
-    # Реальная оплата через Telegram Payments
     if PROVIDER_TOKEN:
         prices = []
         for product_id, qty in cart.items():
@@ -130,7 +130,7 @@ async def cb_checkout(callback: CallbackQuery, bot: Bot):
                 prices.append(
                     LabeledPrice(
                         label=f"{product['name']} × {qty}",
-                        amount=product["price"] * qty * 100,  # копейки
+                        amount=product["price"] * qty * 100,
                     )
                 )
 
@@ -153,7 +153,6 @@ async def cb_checkout(callback: CallbackQuery, bot: Bot):
         await callback.answer()
         return
 
-    # Демо без реального провайдера
     text = format_cart(user_id)
     text += (
         f"\n\n📦 <b>Оформление заказа</b>\n"
@@ -218,6 +217,16 @@ async def cb_confirm_order(callback: CallbackQuery, bot: Bot):
         except Exception:
             pass
 
+    # Сохраняем заказ в базу данных
+    await add_order(
+        user_id=user.id,
+        username=user.username or "",
+        full_name=user.full_name,
+        phone="",
+        items=format_cart(user_id),
+        total=total,
+    )
+
     clear_cart(user_id)
 
     await callback.message.edit_text(
@@ -234,8 +243,6 @@ async def cb_confirm_order(callback: CallbackQuery, bot: Bot):
     await callback.answer("Заказ оформлен!")
 
 
-# ===== Telegram Payments =====
-
 @router.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery, bot: Bot):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
@@ -246,6 +253,16 @@ async def process_successful_payment(message: Message, bot: Bot):
     payment = message.successful_payment
     user = message.from_user
     total = payment.total_amount / 100
+
+    # Сохраняем оплаченный заказ в базу
+    await add_order(
+        user_id=user.id,
+        username=user.username or "",
+        full_name=user.full_name,
+        phone="",
+        items=format_cart(user.id),
+        total=int(total),
+    )
 
     clear_cart(user.id)
 
