@@ -1,30 +1,53 @@
 """
-Цветочный магазин — Telegram-бот (демо)
-Запуск: python main.py
+Цветочный магазин — Telegram-бот
 """
 
 import asyncio
 import logging
 import sys
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 
 from config import BOT_TOKEN
 from handlers import setup_routers
-from data.database import init_db
+from data.database import init_db, save_client, count_products, add_product
+from data.products import PRODUCTS as OLD_PRODUCTS
+
+
+class ClientMiddleware(BaseMiddleware):
+    """Сохраняет каждого пользователя в базу."""
+    async def __call__(self, handler, event, data):
+        if isinstance(event, Message) and event.from_user:
+            await save_client(
+                event.from_user.id,
+                event.from_user.username or "",
+                event.from_user.full_name,
+            )
+        return await handler(event, data)
 
 
 async def main():
-    # Инициализируем базу данных
     await init_db()
+
+    # Загружаем товары из старого файла, если база пустая
+    if await count_products() == 0:
+        for category, items in OLD_PRODUCTS.items():
+            for item in items:
+                await add_product(
+                    category=category,
+                    name=item["name"],
+                    price=item["price"],
+                    description=item["description"],
+                    image=item.get("image"),
+                )
+        print("✅ Товары загружены в базу данных")
 
     if not BOT_TOKEN:
         print("❌ Ошибка: BOT_TOKEN не задан!")
-        print("Создайте файл .env и добавьте строку:")
-        print("BOT_TOKEN=ваш_токен_от_BotFather")
         sys.exit(1)
 
     logging.basicConfig(
@@ -38,18 +61,19 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Подключаем все роутеры
+    dp.message.middleware(ClientMiddleware())
+
     root_router = setup_routers()
     dp.include_router(root_router)
 
-    # Удаляем вебхук (если был) и запускаем polling
     await bot.delete_webhook(drop_pending_updates=True)
 
     print("🌷 Бот цветочного магазина запущен!")
-    print("Нажмите Ctrl+C для остановки")
 
     try:
         await dp.start_polling(bot)
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
     finally:
         await bot.session.close()
 
