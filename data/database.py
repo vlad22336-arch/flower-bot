@@ -13,9 +13,12 @@ async def init_db():
                 username TEXT,
                 full_name TEXT,
                 phone TEXT,
+                comment TEXT,
                 items TEXT,
                 total INTEGER,
                 status TEXT DEFAULT 'Новый',
+                promo TEXT,
+                discount INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -26,8 +29,13 @@ async def init_db():
                 category TEXT,
                 name TEXT,
                 price INTEGER,
+                old_price INTEGER,
                 description TEXT,
-                image TEXT
+                image TEXT,
+                is_hit INTEGER DEFAULT 0,
+                is_new INTEGER DEFAULT 0,
+                in_stock INTEGER DEFAULT 1,
+                sort_order INTEGER DEFAULT 0
             )
         """)
         # Клиенты
@@ -36,6 +44,11 @@ async def init_db():
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 full_name TEXT,
+                birthday TEXT,
+                note TEXT,
+                is_blacklisted INTEGER DEFAULT 0,
+                orders_count INTEGER DEFAULT 0,
+                total_spent INTEGER DEFAULT 0,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -46,38 +59,61 @@ async def init_db():
                 value TEXT
             )
         """)
+        # Промокоды
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS promos (
+                code TEXT PRIMARY KEY,
+                discount INTEGER,
+                uses_left INTEGER,
+                is_active INTEGER DEFAULT 1
+            )
+        """)
+        # Категории
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE,
+                name TEXT,
+                emoji TEXT,
+                sort_order INTEGER DEFAULT 0
+            )
+        """)
+        # Заметки админа
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admin_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
 
 # ===== ЗАКАЗЫ =====
 
-async def add_order(user_id: int, username: str, full_name: str, phone: str, items: str, total: int):
+async def add_order(user_id, username, full_name, phone, comment, items, total, promo=None, discount=0):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO orders (user_id, username, full_name, phone, items, total) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, username, full_name, phone, items, total)
+            "INSERT INTO orders (user_id, username, full_name, phone, comment, items, total, promo, discount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, username, full_name, phone, comment, items, total, promo, discount)
         )
         await db.commit()
         return cursor.lastrowid
 
 
-async def get_orders(limit: int = 20, status: str = None):
+async def get_orders(limit=20, status=None):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         if status:
-            cursor = await db.execute(
-                "SELECT * FROM orders WHERE status = ? ORDER BY id DESC LIMIT ?",
-                (status, limit)
-            )
+            cursor = await db.execute("SELECT * FROM orders WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit))
         else:
-            cursor = await db.execute(
-                "SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,)
-            )
+            cursor = await db.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
 
-async def get_order_by_id(order_id: int):
+async def get_order_by_id(order_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
@@ -85,7 +121,7 @@ async def get_order_by_id(order_id: int):
         return dict(row) if row else None
 
 
-async def update_order_status(order_id: int, status: str):
+async def update_order_status(order_id, status):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE orders SET status = ? WHERE id = ?", (status, order_id))
         await db.commit()
@@ -97,33 +133,68 @@ async def get_stats():
         count, total = await cursor.fetchone()
         cursor2 = await db.execute("SELECT COUNT(*) FROM orders WHERE status = 'Новый'")
         new_count = (await cursor2.fetchone())[0]
-        return count, total, new_count
+        cursor3 = await db.execute("SELECT COALESCE(AVG(total), 0) FROM orders")
+        avg = (await cursor3.fetchone())[0]
+        return count, total, new_count, avg
+
+
+async def get_top_products(limit=10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT items FROM orders")
+        rows = await cursor.fetchall()
+        counts = {}
+        for row in rows:
+            for line in (row[0] or "").split("\n"):
+                if "×" in line:
+                    name = line.split("×")[0].strip()
+                    counts[name] = counts.get(name, 0) + 1
+        sorted_items = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        return sorted_items[:limit]
+
+
+async def get_orders_by_days(days=7):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT DATE(created_at), COUNT(*), COALESCE(SUM(total), 0)
+            FROM orders
+            WHERE created_at >= DATE('now', ?)
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+        """, (f'-{days} days',))
+        rows = await cursor.fetchall()
+        return rows
+
+
+async def delete_old_orders(days=90):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM orders WHERE created_at < DATE('now', ?)", (f'-{days} days',))
+        await db.commit()
 
 
 # ===== ТОВАРЫ =====
 
-async def add_product(category: str, name: str, price: int, description: str, image: str = None):
+async def add_product(category, name, price, description, image=None, old_price=None, is_hit=0, is_new=0):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "INSERT INTO products (category, name, price, description, image) VALUES (?, ?, ?, ?, ?)",
-            (category, name, price, description, image)
-        )
+        cursor = await db.execute("""
+            INSERT INTO products (category, name, price, old_price, description, image, is_hit, is_new)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (category, name, price, old_price, description, image, is_hit, is_new))
         await db.commit()
         return cursor.lastrowid
 
 
-async def get_products(category: str = None):
+async def get_products(category=None):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         if category:
-            cursor = await db.execute("SELECT * FROM products WHERE category = ? ORDER BY id", (category,))
+            cursor = await db.execute("SELECT * FROM products WHERE category = ? ORDER BY sort_order, id", (category,))
         else:
-            cursor = await db.execute("SELECT * FROM products ORDER BY category, id")
+            cursor = await db.execute("SELECT * FROM products ORDER BY category, sort_order, id")
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
 
-async def get_product_by_id(product_id: int):
+async def get_product_by_id(product_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM products WHERE id = ?", (product_id,))
@@ -131,24 +202,20 @@ async def get_product_by_id(product_id: int):
         return dict(row) if row else None
 
 
-async def update_product(product_id: int, name: str = None, price: int = None, description: str = None, image: str = None):
+async def update_product(product_id, **kwargs):
     async with aiosqlite.connect(DB_PATH) as db:
         fields, values = [], []
-        if name is not None:
-            fields.append("name = ?"); values.append(name)
-        if price is not None:
-            fields.append("price = ?"); values.append(price)
-        if description is not None:
-            fields.append("description = ?"); values.append(description)
-        if image is not None:
-            fields.append("image = ?"); values.append(image)
-        values.append(product_id)
+        for key, val in kwargs.items():
+            if val is not None:
+                fields.append(f"{key} = ?")
+                values.append(val)
         if fields:
+            values.append(product_id)
             await db.execute(f"UPDATE products SET {', '.join(fields)} WHERE id = ?", values)
             await db.commit()
 
 
-async def delete_product(product_id: int):
+async def delete_product(product_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
         await db.commit()
@@ -160,9 +227,15 @@ async def count_products():
         return (await cursor.fetchone())[0]
 
 
+async def change_all_prices(percent):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE products SET price = CAST(price * ? / 100 AS INTEGER)", (100 + percent,))
+        await db.commit()
+
+
 # ===== КЛИЕНТЫ =====
 
-async def save_client(user_id: int, username: str, full_name: str):
+async def save_client(user_id, username, full_name):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO clients (user_id, username, full_name, last_seen)
@@ -183,24 +256,111 @@ async def get_clients():
         return [dict(row) for row in rows]
 
 
+async def get_client(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM clients WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def update_client(user_id, **kwargs):
+    async with aiosqlite.connect(DB_PATH) as db:
+        fields, values = [], []
+        for key, val in kwargs.items():
+            if val is not None:
+                fields.append(f"{key} = ?")
+                values.append(val)
+        if fields:
+            values.append(user_id)
+            await db.execute(f"UPDATE clients SET {', '.join(fields)} WHERE user_id = ?", values)
+            await db.commit()
+
+
 async def count_clients():
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT COUNT(*) FROM clients")
         return (await cursor.fetchone())[0]
 
 
-# ===== НАСТРОЙКИ =====
-
-async def set_setting(key: str, value: str):
+async def get_clients_with_birthday_today():
+    from datetime import datetime
+    today = datetime.now().strftime("%d.%m")
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO settings (key, value) VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """, (key, value))
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM clients WHERE birthday LIKE ?", (f"{today}%",))
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+# ===== ПРОМОКОДЫ =====
+
+async def add_promo(code, discount, uses_left):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO promos (code, discount, uses_left) VALUES (?, ?, ?)", (code.upper(), discount, uses_left))
         await db.commit()
 
 
-async def get_setting(key: str, default: str = ""):
+async def get_promo(code):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM promos WHERE code = ? AND is_active = 1", (code.upper(),))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def get_all_promos():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM promos ORDER BY code")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def use_promo(code):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE promos SET uses_left = uses_left - 1 WHERE code = ?", (code.upper(),))
+        await db.execute("UPDATE promos SET is_active = 0 WHERE uses_left <= 0")
+        await db.commit()
+
+
+async def delete_promo(code):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM promos WHERE code = ?", (code.upper(),))
+        await db.commit()
+
+
+# ===== КАТЕГОРИИ =====
+
+async def add_category(code, name, emoji):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO categories (code, name, emoji) VALUES (?, ?, ?)", (code, name, emoji))
+        await db.commit()
+
+
+async def get_categories():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM categories ORDER BY sort_order, id")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_category(code):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM categories WHERE code = ?", (code,))
+        await db.commit()
+
+
+# ===== НАСТРОЙКИ =====
+
+async def set_setting(key, value):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+        await db.commit()
+
+
+async def get_setting(key, default=""):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = await cursor.fetchone()
