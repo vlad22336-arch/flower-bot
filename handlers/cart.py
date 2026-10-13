@@ -69,6 +69,10 @@ async def show_cart(event: Message | CallbackQuery):
             else:
                 await event.message.edit_text(text, reply_markup=cart_kb(has_items), parse_mode="HTML")
         except Exception:
+            try:
+                await event.message.delete()
+            except Exception:
+                pass
             await event.message.answer(text, reply_markup=cart_kb(has_items), parse_mode="HTML")
         await event.answer()
     else:
@@ -100,10 +104,16 @@ async def cart_remove(callback: CallbackQuery):
 @router.callback_query(F.data == "clear_cart")
 async def cb_clear_cart(callback: CallbackQuery):
     clear_cart(callback.from_user.id)
-    await callback.message.edit_text(
-        "🛒 Корзина очищена.",
-        reply_markup=cart_kb(has_items=False),
-    )
+    try:
+        await callback.message.edit_text(
+            "🛒 Корзина очищена.",
+            reply_markup=cart_kb(has_items=False),
+        )
+    except Exception:
+        await callback.message.answer(
+            "🛒 Корзина очищена.",
+            reply_markup=cart_kb(has_items=False),
+        )
     await callback.answer()
 
 
@@ -156,6 +166,10 @@ async def cb_checkout(callback: CallbackQuery, bot: Bot):
         else:
             await callback.message.edit_text(text, reply_markup=confirm_order_with_promo_kb(), parse_mode="HTML")
     except Exception:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.message.answer(text, reply_markup=confirm_order_with_promo_kb(), parse_mode="HTML")
     await callback.answer()
 
@@ -168,12 +182,20 @@ async def cb_confirm_order(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Корзина пуста", show_alert=True)
         return
     await state.set_state(OrderComment.waiting)
-    await callback.message.edit_text(
-        "💬 <b>Есть пожелания к заказу?</b>\n\n"
-        "Напишите их одним сообщением (например, «без лилий» или «доставить к 18:00»).\n"
-        "Или отправьте «-», чтобы пропустить.",
-        parse_mode="HTML",
-    )
+    try:
+        await callback.message.edit_text(
+            "💬 <b>Есть пожелания к заказу?</b>\n\n"
+            "Напишите их одним сообщением (например, «без лилий» или «доставить к 18:00»).\n"
+            "Или отправьте «-», чтобы пропустить.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        await callback.message.answer(
+            "💬 <b>Есть пожелания к заказу?</b>\n\n"
+            "Напишите их одним сообщением (например, «без лилий» или «доставить к 18:00»).\n"
+            "Или отправьте «-», чтобы пропустить.",
+            parse_mode="HTML",
+        )
     await callback.answer()
 
 
@@ -190,22 +212,31 @@ async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
     total = get_cart_total(user_id)
     items = format_cart(user_id)
     user = message.from_user
+
+    # Сначала сбрасываем состояние, потом сохраняем
     await state.clear()
 
     promo_code, discount = user_promos.pop(user_id, (None, 0))
     final_total = int(total * (100 - discount) / 100) if discount else total
 
-    order_id = await add_order(
-        user_id=user.id,
-        username=user.username or "",
-        full_name=user.full_name,
-        phone="",
-        comment=comment,
-        items=items,
-        total=final_total,
-        promo=promo_code,
-        discount=discount,
-    )
+    try:
+        order_id = await add_order(
+            user_id=user.id,
+            username=user.username or "",
+            full_name=user.full_name,
+            phone="",
+            comment=comment,
+            items=items,
+            total=final_total,
+            promo=promo_code,
+            discount=discount,
+        )
+    except Exception as e:
+        await message.answer(
+            f"⚠️ Ошибка сохранения заказа: {e}\n\nПопробуйте оформить заново.",
+            reply_markup=main_menu_kb(),
+        )
+        return
 
     order_text = (
         f"🆕 <b>Новый заказ #{order_id}!</b>\n"
