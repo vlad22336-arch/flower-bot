@@ -5,7 +5,7 @@ DB_PATH = "data/orders.db"
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # Таблица заказов
+        # Заказы
         await db.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,7 +19,7 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Таблица товаров
+        # Товары
         await db.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +30,7 @@ async def init_db():
                 image TEXT
             )
         """)
-        # Таблица клиентов
+        # Клиенты
         await db.execute("""
             CREATE TABLE IF NOT EXISTS clients (
                 user_id INTEGER PRIMARY KEY,
@@ -39,7 +39,7 @@ async def init_db():
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Таблица настроек
+        # Настройки
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
