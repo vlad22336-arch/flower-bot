@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -11,6 +11,7 @@ from data.database import (
     get_orders, get_order_by_id, update_order_status, get_stats,
     add_product, get_products, get_product_by_id, update_product, delete_product,
     get_clients, count_clients, set_setting, get_setting, count_products,
+    add_promo, get_all_promos, delete_promo,
 )
 
 router = Router()
@@ -45,6 +46,12 @@ class EditSetting(StatesGroup):
     value = State()
 
 
+class PromoAdd(StatesGroup):
+    code = State()
+    discount = State()
+    uses = State()
+
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -58,8 +65,9 @@ def admin_menu_kb():
     b.button(text="📊 Статистика", callback_data="admin_stats")
     b.button(text="👥 Клиенты / Рассылка", callback_data="admin_clients")
     b.button(text="🔍 Поиск заказа", callback_data="admin_search")
+    b.button(text="🎟 Промокоды", callback_data="admin_promos")
     b.button(text="📝 Тексты бота", callback_data="admin_texts")
-    b.adjust(2, 2, 1, 1)
+    b.adjust(2, 2, 1, 1, 1)
     return b.as_markup()
 
 
@@ -177,6 +185,12 @@ async def view_order(callback: CallbackQuery):
         f"🆔 <code>{o['user_id']}</code>\n"
         f"📞 {o.get('phone', '—')}\n"
         f"📅 {o['created_at']}\n\n"
+    )
+    if o.get("comment"):
+        text += f"💬 Комментарий: <i>{o['comment']}</i>\n\n"
+    if o.get("discount"):
+        text += f"🎟 Промокод: <b>{o['promo']}</b> (-{o['discount']}%)\n\n"
+    text += (
         f"🛒 {o['items']}\n\n"
         f"💰 Сумма: <b>{o['total']}₽</b>\n"
         f"📌 Статус: <b>{o['status']}</b>"
@@ -186,11 +200,38 @@ async def view_order(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("status:"))
-async def set_status(callback: CallbackQuery):
+async def set_status(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id):
         return
     _, status, order_id = callback.data.split(":")
-    await update_order_status(int(order_id), status)
+    order_id_int = int(order_id)
+
+    order = await get_order_by_id(order_id_int)
+    if not order:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+
+    old_status = order["status"]
+    await update_order_status(order_id_int, status)
+
+    if old_status != status:
+        status_texts = {
+            "Принят": "✅ Ваш заказ принят! Флорист приступил к сборке.",
+            "В доставке": "🚚 Ваш заказ в пути! Курьер скоро будет у вас.",
+            "Выполнен": "✔️ Заказ выполнен. Спасибо за покупку! Будем рады видеть вас снова. 🌷",
+            "Отменён": "❌ К сожалению, ваш заказ отменён. Свяжитесь с менеджером для уточнения деталей.",
+        }
+        text = status_texts.get(status, f"📌 Статус вашего заказа изменён: {status}")
+        try:
+            await bot.send_message(
+                order["user_id"],
+                f"<b>Заказ #{order_id_int}</b>\n\n{text}\n\n"
+                f"💰 Сумма: <b>{order['total']}₽</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
     await callback.answer(f"Статус: {status}", show_alert=True)
     await view_order(callback)
 
@@ -627,3 +668,102 @@ async def setting_save(message: Message, state: FSMContext):
     await set_setting(data["key"], message.text)
     await state.clear()
     await message.answer("✅ Сохранено.", reply_markup=admin_menu_kb())
+
+
+# ===== ПРОМОКОДЫ =====
+
+def promos_menu_kb():
+    b = InlineKeyboardBuilder()
+    b.button(text="➕ Создать промокод", callback_data="promo_add")
+    b.button(text="📋 Список промокодов", callback_data="promo_list")
+    b.button(text="⬅️ Назад", callback_data="admin_back")
+    b.adjust(1)
+    return b.as_markup()
+
+
+@router.callback_query(F.data == "admin_promos")
+async def promos_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.message.edit_text(
+        "🎟 <b>Промокоды</b>",
+        reply_markup=promos_menu_kb(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "promo_add")
+async def promo_add_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.set_state(PromoAdd.code)
+    await callback.message.edit_text("Введите код промокода (например, FLOWER10):")
+    await callback.answer()
+
+
+@router.message(PromoAdd.code)
+async def promo_add_code(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(code=message.text.strip().upper())
+    await state.set_state(PromoAdd.discount)
+    await message.answer("Введите размер скидки в % (только цифры):")
+
+
+@router.message(PromoAdd.discount)
+async def promo_add_discount(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    if not message.text.isdigit():
+        await message.answer("⚠️ Только цифры!")
+        return
+    await state.update_data(discount=int(message.text))
+    await state.set_state(PromoAdd.uses)
+    await message.answer("Сколько раз можно использовать? (цифры):")
+
+
+@router.message(PromoAdd.uses)
+async def promo_add_uses(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    if not message.text.isdigit():
+        await message.answer("⚠️ Только цифры!")
+        return
+    data = await state.get_data()
+    await add_promo(data["code"], data["discount"], int(message.text))
+    await state.clear()
+    await message.answer(
+        f"✅ Промокод <b>{data['code']}</b> создан!",
+        reply_markup=promos_menu_kb(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "promo_list")
+async def promo_list(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    promos = await get_all_promos()
+    b = InlineKeyboardBuilder()
+    for p in promos:
+        b.button(
+            text=f"{p['code']} — {p['discount']}% (ост. {p['uses_left']})",
+            callback_data=f"promo_del:{p['code']}"
+        )
+    b.button(text="⬅️ Назад", callback_data="admin_promos")
+    b.adjust(1)
+    text = f"🎟 <b>Промокоды ({len(promos)}):</b>\n\nНажмите, чтобы удалить."
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("promo_del:"))
+async def promo_delete(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    code = callback.data.split(":")[1]
+    await delete_promo(code)
+    await callback.answer("🗑 Промокод удалён", show_alert=True)
+    await promo_list(callback)
