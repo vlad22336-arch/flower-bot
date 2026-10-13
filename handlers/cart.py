@@ -6,6 +6,9 @@ from aiogram.types import (
     PreCheckoutQuery,
     ContentType,
 )
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
 from data.products import get_product_by_id
 from keyboards.inline import cart_kb, confirm_order_kb, main_menu_kb
 from utils.cart import (
@@ -22,6 +25,10 @@ from config import DEMO_MODE, CURRENCY, CURRENCY_SYMBOL, PROVIDER_TOKEN, ADMIN_I
 from data.database import add_order
 
 router = Router()
+
+
+class OrderComment(StatesGroup):
+    waiting = State()
 
 
 @router.callback_query(F.data.startswith("add_to_cart:"))
@@ -162,10 +169,7 @@ async def cb_checkout(callback: CallbackQuery, bot: Bot):
     if DEMO_MODE:
         text += (
             "⚠️ <i>Демо-режим: реальная оплата отключена.</i>\n\n"
-            "Чтобы включить оплату:\n"
-            "1. Получите <code>PROVIDER_TOKEN</code> у @BotFather → Payments\n"
-            "2. Добавьте его в файл <code>.env</code>\n\n"
-            "Сейчас можно «подтвердить» заказ без оплаты."
+            "Нажмите «Подтвердить заказ», чтобы оформить его."
         )
     else:
         text += "Подтвердите заказ — заявка будет отправлена флористу."
@@ -194,22 +198,63 @@ async def cb_checkout(callback: CallbackQuery, bot: Bot):
 
 
 @router.callback_query(F.data == "confirm_order")
-async def cb_confirm_order(callback: CallbackQuery, bot: Bot):
+async def cb_confirm_order(callback: CallbackQuery, state: FSMContext):
+    """Спрашиваем комментарий к заказу."""
     user_id = callback.from_user.id
     cart = get_cart(user_id)
-    total = get_cart_total(user_id)
-    user = callback.from_user
 
     if not cart:
         await callback.answer("Корзина пуста", show_alert=True)
         return
 
-    order_text = (
-        f"🆕 <b>Новый заказ!</b>\n"
-        f"От: {user.full_name} (@{user.username or 'нет'})\n"
-        f"ID: <code>{user.id}</code>\n\n"
-        f"{format_cart(user_id)}"
+    await state.set_state(OrderComment.waiting)
+    await callback.message.edit_text(
+        "💬 <b>Есть пожелания к заказу?</b>\n\n"
+        "Напишите их одним сообщением (например, «без лилий» или «доставить к 18:00»).\n"
+        "Или отправьте «-», чтобы пропустить.",
+        parse_mode="HTML",
     )
+    await callback.answer()
+
+
+@router.message(OrderComment.waiting)
+async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
+    """Сохраняем заказ с комментарием."""
+    user_id = message.from_user.id
+    cart = get_cart(user_id)
+
+    if not cart:
+        await state.clear()
+        await message.answer("Корзина пуста.", reply_markup=main_menu_kb())
+        return
+
+    comment = "" if message.text.strip() == "-" else message.text.strip()
+    total = get_cart_total(user_id)
+    items = format_cart(user_id)
+    user = message.from_user
+
+    await state.clear()
+
+    # Сохраняем в базу с комментарием
+    order_id = await add_order(
+        user_id=user.id,
+        username=user.username or "",
+        full_name=user.full_name,
+        phone="",
+        comment=comment,
+        items=items,
+        total=total,
+    )
+
+    # Уведомление админам
+    order_text = (
+        f"🆕 <b>Новый заказ #{order_id}!</b>\n"
+        f"От: {user.full_name} (@{user.username or 'нет'})\n"
+        f"ID: <code>{user.id}</code>\n"
+    )
+    if comment:
+        order_text += f"💬 Комментарий: <i>{comment}</i>\n"
+    order_text += f"\n{items}\n\n💰 Сумма: <b>{total} {CURRENCY_SYMBOL}</b>"
 
     for admin_id in ADMIN_IDS:
         try:
@@ -217,30 +262,16 @@ async def cb_confirm_order(callback: CallbackQuery, bot: Bot):
         except Exception:
             pass
 
-    # Сохраняем заказ в базу данных
-    await add_order(
-        user_id=user.id,
-        username=user.username or "",
-        full_name=user.full_name,
-        phone="",
-        items=format_cart(user_id),
-        total=total,
-    )
-
     clear_cart(user_id)
 
-    await callback.message.edit_text(
-        "✅ <b>Заказ принят!</b>\n\n"
-        + (
-            "В демо-режиме оплата не списывалась.\n"
-            if DEMO_MODE
-            else "Флорист получил заявку и скоро свяжется с вами.\n"
-        )
-        + f"\nСумма: <b>{total} {CURRENCY_SYMBOL}</b>",
+    await message.answer(
+        f"✅ <b>Заказ #{order_id} принят!</b>\n\n"
+        + (f"💬 Комментарий: <i>{comment}</i>\n\n" if comment else "")
+        + f"Сумма: <b>{total} {CURRENCY_SYMBOL}</b>\n\n"
+        "Флорист свяжется с вами.",
         reply_markup=main_menu_kb(),
         parse_mode="HTML",
     )
-    await callback.answer("Заказ оформлен!")
 
 
 @router.pre_checkout_query()
@@ -254,12 +285,12 @@ async def process_successful_payment(message: Message, bot: Bot):
     user = message.from_user
     total = payment.total_amount / 100
 
-    # Сохраняем оплаченный заказ в базу
     await add_order(
         user_id=user.id,
         username=user.username or "",
         full_name=user.full_name,
         phone="",
+        comment="Оплачено через Telegram",
         items=format_cart(user.id),
         total=int(total),
     )
