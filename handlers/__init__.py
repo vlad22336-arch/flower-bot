@@ -1,7 +1,7 @@
 from aiogram import Router
 from . import (
     start, catalog, cart, other,
-    admin, admin_promo, admin_products, admin_categories, promo,
+    admin, admin_promo, admin_products, admin_categories, admin_clients, promo,
 )
 
 def setup_routers() -> Router:
@@ -14,5 +14,6 @@ def setup_routers() -> Router:
     router.include_router(admin_promo.router)
     router.include_router(admin_products.router)
     router.include_router(admin_categories.router)
+    router.include_router(admin_clients.router)
     router.include_router(promo.router)
     return router
