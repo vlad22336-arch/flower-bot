@@ -4,33 +4,17 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import os
 import csv
 import io
 
 from config import ADMIN_IDS
 from data.database import (
     get_orders, get_order_by_id, update_order_status, get_stats,
-    add_product, get_products, get_product_by_id, update_product, delete_product,
-    get_clients, count_clients, set_setting, get_setting, count_products,
+    get_clients, count_clients, set_setting, get_setting,
     get_all_orders,
 )
 
 router = Router()
-
-
-class AddProduct(StatesGroup):
-    category = State()
-    name = State()
-    price = State()
-    description = State()
-    image = State()
-
-
-class EditProduct(StatesGroup):
-    name = State()
-    price = State()
-    description = State()
 
 
 class SearchOrder(StatesGroup):
@@ -92,6 +76,8 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
         )
     await callback.answer()
 
+
+# ===== ЗАКАЗЫ =====
 
 def orders_filter_kb():
     b = InlineKeyboardBuilder()
@@ -275,6 +261,8 @@ async def export_orders_csv(callback: CallbackQuery):
     await callback.answer("Файл отправлен!")
 
 
+# ===== ПОИСК ЗАКАЗА =====
+
 @router.callback_query(F.data == "admin_search")
 async def search_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -307,21 +295,21 @@ async def search_result(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=order_status_kb(o["id"]), parse_mode="HTML")
 
 
+# ===== СТАТИСТИКА =====
+
 @router.callback_query(F.data == "admin_stats")
 async def show_stats(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
     count, total, new_count = await get_stats()
     clients = await count_clients()
-    products = await count_products()
     try:
         await callback.message.edit_text(
             f"📊 <b>Статистика</b>\n\n"
             f"📦 Всего заказов: <b>{count}</b>\n"
             f"🆕 Новых: <b>{new_count}</b>\n"
             f"💰 Выручка: <b>{total}₽</b>\n"
-            f"👥 Клиентов: <b>{clients}</b>\n"
-            f"🛍 Товаров: <b>{products}</b>",
+            f"👥 Клиентов: <b>{clients}</b>",
             reply_markup=admin_menu_kb(),
             parse_mode="HTML",
         )
@@ -330,294 +318,7 @@ async def show_stats(callback: CallbackQuery):
     await callback.answer()
 
 
-def products_menu_kb():
-    b = InlineKeyboardBuilder()
-    b.button(text="➕ Добавить товар", callback_data="product_add")
-    b.button(text="📋 Список товаров", callback_data="product_list")
-    b.button(text="⬅️ Назад", callback_data="admin_back")
-    b.adjust(1)
-    return b.as_markup()
-
-
-def categories_kb():
-    b = InlineKeyboardBuilder()
-    b.button(text="💐 Букеты", callback_data="cat:bouquets")
-    b.button(text="🎁 Коробки", callback_data="cat:boxes")
-    b.button(text="🪴 Растения", callback_data="cat:plants")
-    b.button(text="⬅️ Отмена", callback_data="admin_products")
-    b.adjust(1)
-    return b.as_markup()
-
-
-@router.callback_query(F.data == "admin_products")
-async def products_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    if not is_admin(callback.from_user.id):
-        return
-    try:
-        await callback.message.edit_text(
-            "🛍 <b>Управление товарами</b>",
-            reply_markup=products_menu_kb(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data == "product_list")
-async def product_list(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    products = await get_products()
-    if not products:
-        try:
-            await callback.message.edit_text("📭 Товаров нет.", reply_markup=products_menu_kb())
-        except Exception:
-            pass
-        await callback.answer()
-        return
-    b = InlineKeyboardBuilder()
-    for p in products:
-        b.button(text=f"{p['name']} — {p['price']}₽", callback_data=f"prod_view:{p['id']}")
-    b.button(text="⬅️ Назад", callback_data="admin_products")
-    b.adjust(1)
-    try:
-        await callback.message.edit_text(
-            f"📋 <b>Товары ({len(products)}):</b>",
-            reply_markup=b.as_markup(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("prod_view:"))
-async def product_view(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    p = await get_product_by_id(int(callback.data.split(":")[1]))
-    if not p:
-        await callback.answer("Не найдено", show_alert=True)
-        return
-    b = InlineKeyboardBuilder()
-    b.button(text="✏️ Изменить", callback_data=f"prod_edit:{p['id']}")
-    b.button(text="🖼 Картинка", callback_data=f"prod_img:{p['id']}")
-    b.button(text="🗑 Удалить", callback_data=f"prod_del:{p['id']}")
-    b.button(text="⬅️ Назад", callback_data="product_list")
-    b.adjust(2, 1, 1)
-    text = (
-        f"🛍 <b>{p['name']}</b>\n\n"
-        f"📁 {p['category']}\n"
-        f"💰 <b>{p['price']}₽</b>\n"
-        f"📝 {p['description']}\n"
-        f"🖼 {p['image'] or 'нет'}"
-    )
-    try:
-        await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
-    except Exception:
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await callback.message.answer(text, reply_markup=b.as_markup(), parse_mode="HTML")
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("prod_del:"))
-async def product_delete(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    await delete_product(int(callback.data.split(":")[1]))
-    await callback.answer("🗑 Удалено", show_alert=True)
-    await product_list(callback)
-
-
-@router.callback_query(F.data.startswith("prod_edit:"))
-async def product_edit(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        return
-    pid = int(callback.data.split(":")[1])
-    await state.update_data(edit_id=pid)
-    await state.set_state(EditProduct.name)
-    p = await get_product_by_id(pid)
-    try:
-        await callback.message.edit_text(
-            f"✏️ <b>{p['name']}</b>\n\nВведите новое название (или «-» чтобы пропустить):",
-            parse_mode="HTML",
-        )
-    except Exception:
-        await callback.message.answer(
-            f"✏️ <b>{p['name']}</b>\n\nВведите новое название (или «-» чтобы пропустить):",
-            parse_mode="HTML",
-        )
-    await callback.answer()
-
-
-@router.message(EditProduct.name)
-async def edit_name(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    name = None if message.text == "-" else message.text
-    await state.update_data(name=name)
-    await state.set_state(EditProduct.price)
-    await message.answer("Введите новую цену (цифры) или «-» чтобы пропустить:")
-
-
-@router.message(EditProduct.price)
-async def edit_price(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    price = None if message.text == "-" else (int(message.text) if message.text.isdigit() else None)
-    await state.update_data(price=price)
-    await state.set_state(EditProduct.description)
-    await message.answer("Введите новое описание или «-» чтобы пропустить:")
-
-
-@router.message(EditProduct.description)
-async def edit_description(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    data = await state.get_data()
-    desc = None if message.text == "-" else message.text
-    await update_product(
-        product_id=data["edit_id"],
-        name=data.get("name"),
-        price=data.get("price"),
-        description=desc,
-    )
-    await state.clear()
-    await message.answer("✅ Товар обновлён.", reply_markup=admin_menu_kb())
-
-
-@router.callback_query(F.data.startswith("prod_img:"))
-async def product_img_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        return
-    pid = int(callback.data.split(":")[1])
-    await state.update_data(edit_id=pid)
-    await state.set_state(AddProduct.image)
-    try:
-        await callback.message.edit_text("🖼 Отправьте картинку для товара (или «-» чтобы удалить):")
-    except Exception:
-        await callback.message.answer("🖼 Отправьте картинку для товара (или «-» чтобы удалить):")
-    await callback.answer()
-
-
-@router.message(AddProduct.image, F.photo)
-async def product_img_set(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    data = await state.get_data()
-    pid = data.get("edit_id")
-    os.makedirs("images", exist_ok=True)
-    file_path = f"images/product_{pid}.jpg"
-    await message.bot.download(message.photo[-1], destination=file_path)
-    await update_product(pid, image=file_path)
-    await state.clear()
-    await message.answer("✅ Картинка обновлена.", reply_markup=admin_menu_kb())
-
-
-@router.callback_query(F.data == "product_add")
-async def product_add_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        return
-    await state.clear()
-    try:
-        await callback.message.edit_text(
-            "🛍 <b>Добавление товара</b>\n\nВыберите категорию:",
-            reply_markup=categories_kb(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        await callback.message.answer(
-            "🛍 <b>Добавление товара</b>\n\nВыберите категорию:",
-            reply_markup=categories_kb(),
-            parse_mode="HTML",
-        )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("cat:"))
-async def product_add_cat(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        return
-    await state.update_data(category=callback.data.split(":")[1])
-    await state.set_state(AddProduct.name)
-    try:
-        await callback.message.edit_text("Введите <b>название</b> товара:", parse_mode="HTML")
-    except Exception:
-        await callback.message.answer("Введите <b>название</b> товара:", parse_mode="HTML")
-    await callback.answer()
-
-
-@router.message(AddProduct.name)
-async def add_name(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.update_data(name=message.text)
-    await state.set_state(AddProduct.price)
-    await message.answer("Введите <b>цену</b> (цифры, в рублях):", parse_mode="HTML")
-
-
-@router.message(AddProduct.price)
-async def add_price(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    if not message.text.isdigit():
-        await message.answer("⚠️ Только цифры!")
-        return
-    await state.update_data(price=int(message.text))
-    await state.set_state(AddProduct.description)
-    await message.answer("Введите <b>описание</b>:", parse_mode="HTML")
-
-
-@router.message(AddProduct.description)
-async def add_description(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.update_data(description=message.text)
-    await state.set_state(AddProduct.image)
-    await message.answer("🖼 Отправьте <b>картинку</b> или напишите «-» чтобы пропустить:", parse_mode="HTML")
-
-
-@router.message(AddProduct.image, F.photo)
-async def add_image(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    data = await state.get_data()
-    os.makedirs("images", exist_ok=True)
-    path = f"images/new_{message.from_user.id}.jpg"
-    await message.bot.download(message.photo[-1], destination=path)
-    pid = await add_product(
-        category=data["category"], name=data["name"],
-        price=data["price"], description=data["description"], image=path,
-    )
-    await state.clear()
-    await message.answer(
-        f"✅ Товар <b>{data['name']}</b> добавлен (ID {pid}).",
-        reply_markup=admin_menu_kb(),
-        parse_mode="HTML",
-    )
-
-
-@router.message(AddProduct.image, F.text == "-")
-async def add_no_image(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    data = await state.get_data()
-    pid = await add_product(
-        category=data["category"], name=data["name"],
-        price=data["price"], description=data["description"], image=None,
-    )
-    await state.clear()
-    await message.answer(
-        f"✅ Товар <b>{data['name']}</b> добавлен (ID {pid}).",
-        reply_markup=admin_menu_kb(),
-        parse_mode="HTML",
-    )
-
+# ===== КЛИЕНТЫ / РАССЫЛКА =====
 
 @router.callback_query(F.data == "admin_clients")
 async def clients_menu(callback: CallbackQuery):
@@ -687,6 +388,8 @@ async def broadcast_send(message: Message, state: FSMContext):
         reply_markup=admin_menu_kb(),
     )
 
+
+# ===== ТЕКСТЫ БОТА =====
 
 @router.callback_query(F.data == "admin_texts")
 async def texts_menu(callback: CallbackQuery):
