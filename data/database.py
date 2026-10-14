@@ -13,6 +13,7 @@ async def init_db():
                 full_name TEXT,
                 phone TEXT,
                 comment TEXT,
+                admin_comment TEXT,
                 items TEXT,
                 total INTEGER,
                 status TEXT DEFAULT 'Новый',
@@ -106,6 +107,18 @@ async def get_all_orders():
         return [dict(row) for row in rows]
 
 
+async def get_orders_by_period(days: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT * FROM orders
+            WHERE created_at >= DATE('now', ?)
+            ORDER BY id DESC
+        """, (f'-{days} days',))
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def get_order_by_id(order_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -117,6 +130,12 @@ async def get_order_by_id(order_id):
 async def update_order_status(order_id, status):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE orders SET status = ? WHERE id = ?", (status, order_id))
+        await db.commit()
+
+
+async def update_order_comment(order_id: int, comment: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE orders SET admin_comment = ? WHERE id = ?", (comment, order_id))
         await db.commit()
 
 
@@ -191,6 +210,12 @@ async def count_products():
         return (await cursor.fetchone())[0]
 
 
+async def change_all_prices(percent: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE products SET price = CAST(price * ? / 100 AS INTEGER)", (100 + percent,))
+        await db.commit()
+
+
 # ===== КЛИЕНТЫ =====
 
 async def save_client(user_id, username, full_name):
@@ -210,6 +235,22 @@ async def get_clients():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM clients ORDER BY last_seen DESC")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def search_clients(query: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        q = f"%{query.lower()}%"
+        cursor = await db.execute("""
+            SELECT * FROM clients
+            WHERE LOWER(full_name) LIKE ?
+               OR LOWER(username) LIKE ?
+               OR CAST(user_id AS TEXT) LIKE ?
+            ORDER BY last_seen DESC
+            LIMIT 20
+        """, (q, q, q))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
@@ -291,24 +332,23 @@ async def get_setting(key, default=""):
         cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = await cursor.fetchone()
         return row[0] if row else default
-        
 
-# ===== МИГРАЦИЯ (обновление старой базы) =====
+
+# ===== МИГРАЦИЯ =====
 
 async def migrate_db():
-    """Добавляет недостающие колонки в таблицы (если база старая)."""
     async with aiosqlite.connect(DB_PATH) as db:
-        # orders
         cursor = await db.execute("PRAGMA table_info(orders)")
         cols = [row[1] for row in await cursor.fetchall()]
         if "comment" not in cols:
             await db.execute("ALTER TABLE orders ADD COLUMN comment TEXT")
+        if "admin_comment" not in cols:
+            await db.execute("ALTER TABLE orders ADD COLUMN admin_comment TEXT")
         if "promo" not in cols:
             await db.execute("ALTER TABLE orders ADD COLUMN promo TEXT")
         if "discount" not in cols:
             await db.execute("ALTER TABLE orders ADD COLUMN discount INTEGER DEFAULT 0")
 
-        # products
         cursor = await db.execute("PRAGMA table_info(products)")
         cols = [row[1] for row in await cursor.fetchall()]
         if "old_price" not in cols:
@@ -322,7 +362,6 @@ async def migrate_db():
         if "sort_order" not in cols:
             await db.execute("ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0")
 
-        # clients
         cursor = await db.execute("PRAGMA table_info(clients)")
         cols = [row[1] for row in await cursor.fetchall()]
         if "birthday" not in cols:
@@ -339,19 +378,18 @@ async def migrate_db():
         await db.commit()
 
 
-# ===== МАССОВОЕ ИЗМЕНЕНИЕ ЦЕН =====
-
-async def change_all_prices(percent: int):
-    """Изменяет все цены на указанный процент (может быть отрицательным)."""
+async def migrate_admin_comment():
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE products SET price = CAST(price * ? / 100 AS INTEGER)", (100 + percent,))
-        await db.commit()
+        cursor = await db.execute("PRAGMA table_info(orders)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "admin_comment" not in cols:
+            await db.execute("ALTER TABLE orders ADD COLUMN admin_comment TEXT")
+            await db.commit()
 
 
 # ===== АНАЛИТИКА =====
 
 async def get_top_products(limit: int = 10):
-    """Возвращает топ товаров по количеству заказов."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT items FROM orders")
         rows = await cursor.fetchall()
@@ -366,7 +404,6 @@ async def get_top_products(limit: int = 10):
 
 
 async def get_avg_check():
-    """Возвращает средний чек."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT COALESCE(AVG(total), 0) FROM orders")
         avg = (await cursor.fetchone())[0]
@@ -374,7 +411,6 @@ async def get_avg_check():
 
 
 async def get_orders_by_days(days: int = 7):
-    """Возвращает количество заказов и сумму по дням."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT DATE(created_at), COUNT(*), COALESCE(SUM(total), 0)
@@ -391,10 +427,7 @@ async def get_orders_by_days(days: int = 7):
 
 async def add_category(code: str, name: str, emoji: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO categories (code, name, emoji) VALUES (?, ?, ?)",
-            (code, name, emoji)
-        )
+        await db.execute("INSERT OR REPLACE INTO categories (code, name, emoji) VALUES (?, ?, ?)", (code, name, emoji))
         await db.commit()
 
 
@@ -415,5 +448,4 @@ async def delete_category(code: str):
 # ===== РЕЗЕРВНОЕ КОПИРОВАНИЕ =====
 
 async def backup_db():
-    """Возвращает путь к файлу базы для скачивания."""
     return DB_PATH
