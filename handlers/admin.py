@@ -10,8 +10,7 @@ import io
 from config import ADMIN_IDS
 from data.database import (
     get_orders, get_order_by_id, update_order_status, get_stats,
-    get_clients, count_clients, set_setting, get_setting,
-    get_all_orders,
+    count_clients, set_setting, get_setting, get_all_orders,
 )
 
 router = Router()
@@ -19,10 +18,6 @@ router = Router()
 
 class SearchOrder(StatesGroup):
     query = State()
-
-
-class Broadcast(StatesGroup):
-    message = State()
 
 
 class EditSetting(StatesGroup):
@@ -40,7 +35,7 @@ def admin_menu_kb():
     b.button(text="🛍 Товары", callback_data="admin_products")
     b.button(text="📁 Категории", callback_data="admin_categories")
     b.button(text="📊 Статистика", callback_data="admin_stats")
-    b.button(text="👥 Клиенты / Рассылка", callback_data="admin_clients")
+    b.button(text="👥 Клиенты", callback_data="admin_clients")
     b.button(text="🔍 Поиск заказа", callback_data="admin_search")
     b.button(text="🎟 Промокоды", callback_data="admin_promos")
     b.button(text="📝 Тексты бота", callback_data="admin_texts")
@@ -317,77 +312,6 @@ async def show_stats(callback: CallbackQuery):
     except Exception:
         pass
     await callback.answer()
-
-
-# ===== КЛИЕНТЫ / РАССЫЛКА =====
-
-@router.callback_query(F.data == "admin_clients")
-async def clients_menu(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    b = InlineKeyboardBuilder()
-    b.button(text="👥 Список клиентов", callback_data="clients_list")
-    b.button(text="📢 Сделать рассылку", callback_data="broadcast")
-    b.button(text="⬅️ Назад", callback_data="admin_back")
-    b.adjust(1)
-    try:
-        await callback.message.edit_text(
-            "👥 <b>Клиенты</b>",
-            reply_markup=b.as_markup(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data == "clients_list")
-async def clients_list(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    clients = await get_clients()
-    b = InlineKeyboardBuilder()
-    b.button(text="⬅️ Назад", callback_data="admin_clients")
-    b.adjust(1)
-    text = f"👥 <b>Клиентов: {len(clients)}</b>\n\n"
-    for c in clients[:30]:
-        text += f"• {c['full_name']} (@{c['username'] or '—'})\n"
-    try:
-        await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data == "broadcast")
-async def broadcast_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        return
-    await state.set_state(Broadcast.message)
-    try:
-        await callback.message.edit_text("📢 Напишите сообщение для рассылки всем клиентам:")
-    except Exception:
-        await callback.message.answer("📢 Напишите сообщение для рассылки всем клиентам:")
-    await callback.answer()
-
-
-@router.message(Broadcast.message)
-async def broadcast_send(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    clients = await get_clients()
-    sent = failed = 0
-    for c in clients:
-        try:
-            await message.bot.send_message(c["user_id"], message.text)
-            sent += 1
-        except Exception:
-            failed += 1
-    await state.clear()
-    await message.answer(
-        f"📢 Готово!\n\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}",
-        reply_markup=admin_menu_kb(),
-    )
 
 
 # ===== ТЕКСТЫ БОТА =====
