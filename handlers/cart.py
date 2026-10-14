@@ -64,10 +64,10 @@ async def cb_add_to_cart(callback: CallbackQuery):
 
 
 @router.message(F.text == "🛒 Корзина")
-
 @router.callback_query(F.data == "cart")
-   async def show_c textart(event: Message | CallbackQuery):
-    = user_id = event.from_user.id format_cart(user_id)
+async def show_cart(event: Message | CallbackQuery):
+    user_id = event.from_user.id
+    text = format_cart(user_id)
     has_items = bool(get_cart(user_id))
 
     if isinstance(event, CallbackQuery):
@@ -78,6 +78,10 @@ async def cb_add_to_cart(callback: CallbackQuery):
             else:
                 await event.message.edit_text(text, reply_markup=cart_kb(has_items), parse_mode="HTML")
         except Exception:
+            try:
+                await event.message.delete()
+            except Exception:
+                pass
             await event.message.answer(text, reply_markup=cart_kb(has_items), parse_mode="HTML")
         await event.answer()
     else:
@@ -186,9 +190,9 @@ async def cb_confirm_order(callback: CallbackQuery, state: FSMContext):
     if not cart:
         await callback.answer("Корзина пуста", show_alert=True)
         return
+
     await state.set_state(OrderComment.waiting)
 
-    # Скрываем ReplyKeyboard на время оформления
     try:
         await callback.message.edit_text(
             "💬 <b>Есть пожелания к заказу?</b>\n\n"
@@ -211,6 +215,7 @@ async def cb_confirm_order(callback: CallbackQuery, state: FSMContext):
 async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     cart = get_cart(user_id)
+
     if not cart:
         await state.clear()
         await message.answer("Корзина пуста.", reply_markup=main_menu_kb())
@@ -265,7 +270,6 @@ async def cb_order_comment(message: Message, state: FSMContext, bot: Bot):
 
     clear_cart(user_id)
 
-    # Финальное сообщение с inline-кнопкой «В главное меню»
     await message.answer(
         f"✅ <b>Заказ #{order_id} принят!</b>\n\n"
         + (f"💬 Комментарий: <i>{comment}</i>\n\n" if comment else "")
