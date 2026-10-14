@@ -291,3 +291,129 @@ async def get_setting(key, default=""):
         cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = await cursor.fetchone()
         return row[0] if row else default
+        
+
+# ===== МИГРАЦИЯ (обновление старой базы) =====
+
+async def migrate_db():
+    """Добавляет недостающие колонки в таблицы (если база старая)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        # orders
+        cursor = await db.execute("PRAGMA table_info(orders)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "comment" not in cols:
+            await db.execute("ALTER TABLE orders ADD COLUMN comment TEXT")
+        if "promo" not in cols:
+            await db.execute("ALTER TABLE orders ADD COLUMN promo TEXT")
+        if "discount" not in cols:
+            await db.execute("ALTER TABLE orders ADD COLUMN discount INTEGER DEFAULT 0")
+
+        # products
+        cursor = await db.execute("PRAGMA table_info(products)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "old_price" not in cols:
+            await db.execute("ALTER TABLE products ADD COLUMN old_price INTEGER")
+        if "is_hit" not in cols:
+            await db.execute("ALTER TABLE products ADD COLUMN is_hit INTEGER DEFAULT 0")
+        if "is_new" not in cols:
+            await db.execute("ALTER TABLE products ADD COLUMN is_new INTEGER DEFAULT 0")
+        if "in_stock" not in cols:
+            await db.execute("ALTER TABLE products ADD COLUMN in_stock INTEGER DEFAULT 1")
+        if "sort_order" not in cols:
+            await db.execute("ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0")
+
+        # clients
+        cursor = await db.execute("PRAGMA table_info(clients)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "birthday" not in cols:
+            await db.execute("ALTER TABLE clients ADD COLUMN birthday TEXT")
+        if "note" not in cols:
+            await db.execute("ALTER TABLE clients ADD COLUMN note TEXT")
+        if "is_blacklisted" not in cols:
+            await db.execute("ALTER TABLE clients ADD COLUMN is_blacklisted INTEGER DEFAULT 0")
+        if "orders_count" not in cols:
+            await db.execute("ALTER TABLE clients ADD COLUMN orders_count INTEGER DEFAULT 0")
+        if "total_spent" not in cols:
+            await db.execute("ALTER TABLE clients ADD COLUMN total_spent INTEGER DEFAULT 0")
+
+        await db.commit()
+
+
+# ===== МАССОВОЕ ИЗМЕНЕНИЕ ЦЕН =====
+
+async def change_all_prices(percent: int):
+    """Изменяет все цены на указанный процент (может быть отрицательным)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE products SET price = CAST(price * ? / 100 AS INTEGER)", (100 + percent,))
+        await db.commit()
+
+
+# ===== АНАЛИТИКА =====
+
+async def get_top_products(limit: int = 10):
+    """Возвращает топ товаров по количеству заказов."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT items FROM orders")
+        rows = await cursor.fetchall()
+        counts = {}
+        for row in rows:
+            for line in (row[0] or "").split("\n"):
+                if "×" in line:
+                    name = line.split("×")[0].strip()
+                    counts[name] = counts.get(name, 0) + 1
+        sorted_items = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        return sorted_items[:limit]
+
+
+async def get_avg_check():
+    """Возвращает средний чек."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT COALESCE(AVG(total), 0) FROM orders")
+        avg = (await cursor.fetchone())[0]
+        return int(avg)
+
+
+async def get_orders_by_days(days: int = 7):
+    """Возвращает количество заказов и сумму по дням."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT DATE(created_at), COUNT(*), COALESCE(SUM(total), 0)
+            FROM orders
+            WHERE created_at >= DATE('now', ?)
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+        """, (f'-{days} days',))
+        rows = await cursor.fetchall()
+        return rows
+
+
+# ===== КАТЕГОРИИ =====
+
+async def add_category(code: str, name: str, emoji: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO categories (code, name, emoji) VALUES (?, ?, ?)",
+            (code, name, emoji)
+        )
+        await db.commit()
+
+
+async def get_categories():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM categories ORDER BY sort_order, id")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_category(code: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM categories WHERE code = ?", (code,))
+        await db.commit()
+
+
+# ===== РЕЗЕРВНОЕ КОПИРОВАНИЕ =====
+
+async def backup_db():
+    """Возвращает путь к файлу базы для скачивания."""
+    return DB_PATH
