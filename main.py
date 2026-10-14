@@ -14,7 +14,7 @@ from aiogram.types import Message
 
 from config import BOT_TOKEN
 from handlers import setup_routers
-from data.database import init_db, save_client, count_products, add_product
+from data.database import init_db, migrate_db, save_client, count_products, add_product
 from data.products import PRODUCTS as OLD_PRODUCTS
 
 
@@ -32,6 +32,7 @@ class ClientMiddleware(BaseMiddleware):
 
 async def main():
     await init_db()
+    await migrate_db()  # ← Добавлено: обновляет старую базу
 
     # Загружаем товары из старого файла, если база пустая
     if await count_products() == 0:
