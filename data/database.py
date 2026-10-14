@@ -74,6 +74,16 @@ async def init_db():
                 sort_order INTEGER DEFAULT 0
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS important_dates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                name TEXT,
+                date TEXT,
+                contact TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
 
@@ -382,6 +392,62 @@ async def migrate_db():
         await db.commit()
 
 
+async def migrate_admin_comment():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("PRAGMA table_info(orders)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "admin_comment" not in cols:
+            await db.execute("ALTER TABLE orders ADD COLUMN admin_comment TEXT")
+            await db.commit()
+
+
+async def migrate_important_dates():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS important_dates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                name TEXT,
+                date TEXT,
+                contact TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor = await db.execute("PRAGMA table_info(important_dates)")
+        cols = [row[1] for row in await cursor.fetchall()]
+        if "contact" not in cols:
+            await db.execute("ALTER TABLE important_dates ADD COLUMN contact TEXT")
+        await db.commit()
+
+
+# ===== ВАЖНЫЕ ДАТЫ =====
+
+async def add_important_date(user_id: int, name: str, date: str, contact: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO important_dates (user_id, name, date, contact) VALUES (?, ?, ?, ?)",
+            (user_id, name, date, contact)
+        )
+        await db.commit()
+
+
+async def get_important_dates(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM important_dates WHERE user_id = ? ORDER BY date",
+            (user_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_important_date(date_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM important_dates WHERE id = ?", (date_id,))
+        await db.commit()
+
+
 # ===== АНАЛИТИКА =====
 
 async def get_top_products(limit: int = 10):
@@ -417,20 +483,15 @@ async def get_orders_by_days(days: int = 7):
 
 
 async def get_month_report():
-    """Отчёт за текущий месяц."""
     async with aiosqlite.connect(DB_PATH) as db:
-        # Заказы за месяц
         cursor = await db.execute("""
             SELECT COUNT(*), COALESCE(SUM(total), 0)
             FROM orders
             WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
         """)
         count, total = await cursor.fetchone()
-
-        # Средний чек за месяц
         avg = int(total / count) if count else 0
 
-        # Топ-5 товаров за месяц
         cursor = await db.execute("""
             SELECT items FROM orders
             WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
@@ -444,7 +505,6 @@ async def get_month_report():
                     counts[name] = counts.get(name, 0) + 1
         top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
-        # Новых клиентов за месяц
         cursor = await db.execute("""
             SELECT COUNT(*) FROM clients
             WHERE strftime('%Y-%m', last_seen) = strftime('%Y-%m', 'now')
