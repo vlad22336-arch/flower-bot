@@ -14,7 +14,10 @@ from aiogram.types import Message
 
 from config import BOT_TOKEN
 from handlers import setup_routers
-from data.database import init_db, migrate_db, save_client, count_products, add_product
+from data.database import (
+    init_db, migrate_db, migrate_important_dates,
+    save_client, count_products, add_product,
+)
 from data.products import PRODUCTS as OLD_PRODUCTS
 
 
@@ -32,6 +35,7 @@ class ClientMiddleware(BaseMiddleware):
 async def main():
     await init_db()
     await migrate_db()
+    await migrate_important_dates()
 
     if await count_products() == 0:
         for category, items in OLD_PRODUCTS.items():
