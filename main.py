@@ -19,7 +19,6 @@ from data.products import PRODUCTS as OLD_PRODUCTS
 
 
 class ClientMiddleware(BaseMiddleware):
-    """Сохраняет каждого пользователя в базу."""
     async def __call__(self, handler, event, data):
         if isinstance(event, Message) and event.from_user:
             await save_client(
@@ -32,9 +31,8 @@ class ClientMiddleware(BaseMiddleware):
 
 async def main():
     await init_db()
-    await migrate_db()  # ← Добавлено: обновляет старую базу
+    await migrate_db()
 
-    # Загружаем товары из старого файла, если база пустая
     if await count_products() == 0:
         for category, items in OLD_PRODUCTS.items():
             for item in items:
@@ -56,19 +54,14 @@ async def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
-
     dp.message.middleware(ClientMiddleware())
 
     root_router = setup_routers()
     dp.include_router(root_router)
 
     await bot.delete_webhook(drop_pending_updates=True)
-
     print("🌷 Бот цветочного магазина запущен!")
 
     try:
