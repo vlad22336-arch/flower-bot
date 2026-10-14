@@ -11,6 +11,7 @@ from config import ADMIN_IDS
 from data.database import (
     get_orders, get_order_by_id, update_order_status, get_stats,
     count_clients, set_setting, get_setting, get_all_orders,
+    get_orders_by_period, update_order_comment,
 )
 
 router = Router()
@@ -23,6 +24,15 @@ class SearchOrder(StatesGroup):
 class EditSetting(StatesGroup):
     key = State()
     value = State()
+
+
+class OrderComment(StatesGroup):
+    text = State()
+
+
+class WriteClient(StatesGroup):
+    user_id = State()
+    text = State()
 
 
 def is_admin(user_id: int) -> bool:
@@ -39,8 +49,9 @@ def admin_menu_kb():
     b.button(text="👥 Клиенты", callback_data="admin_clients")
     b.button(text="🔍 Поиск заказа", callback_data="admin_search")
     b.button(text="🎟 Промокоды", callback_data="admin_promos")
+    b.button(text="🔧 Сервис", callback_data="admin_service")
     b.button(text="📝 Тексты бота", callback_data="admin_texts")
-    b.adjust(2, 2, 2, 2, 1)
+    b.adjust(2, 2, 2, 2, 1, 1)
     return b.as_markup()
 
 
@@ -83,9 +94,12 @@ def orders_filter_kb():
     b.button(text="✔️ Выполненные", callback_data="ordf:Выполнен")
     b.button(text="❌ Отменённые", callback_data="ordf:Отменён")
     b.button(text="📋 Все", callback_data="ordf:all")
+    b.button(text="📅 За сегодня", callback_data="ordd:1")
+    b.button(text="📅 За неделю", callback_data="ordd:7")
+    b.button(text="📅 За месяц", callback_data="ordd:30")
     b.button(text="📥 Экспорт в CSV", callback_data="export_csv")
     b.button(text="⬅️ Назад", callback_data="admin_back")
-    b.adjust(2, 2, 1, 1, 1)
+    b.adjust(2, 2, 1, 3, 1, 1)
     return b.as_markup()
 
 
@@ -108,8 +122,10 @@ def order_status_kb(order_id: int):
     b.button(text="🚚 В доставке", callback_data=f"status:В доставке:{order_id}")
     b.button(text="✔️ Выполнен", callback_data=f"status:Выполнен:{order_id}")
     b.button(text="❌ Отменён", callback_data=f"status:Отменён:{order_id}")
+    b.button(text="📝 Комментарий", callback_data=f"admin_comment:{order_id}")
+    b.button(text="💬 Написать клиенту", callback_data=f"write_client:{order_id}")
     b.button(text="⬅️ К списку", callback_data="admin_orders")
-    b.adjust(2, 2, 1)
+    b.adjust(2, 2, 2, 1)
     return b.as_markup()
 
 
@@ -150,6 +166,30 @@ async def show_orders(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("ordd:"))
+async def show_orders_by_date(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    days = int(callback.data.split(":")[1])
+    orders = await get_orders_by_period(days)
+    if not orders:
+        try:
+            await callback.message.edit_text(
+                f"📭 Заказов за {days} дн. нет.",
+                reply_markup=orders_filter_kb(),
+            )
+        except Exception:
+            pass
+        await callback.answer()
+        return
+    title = f"📅 <b>Заказы за {days} дн.:</b>\n\nВсего: {len(orders)}"
+    try:
+        await callback.message.edit_text(title, reply_markup=orders_list_kb(orders), parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("order_view:"))
 async def view_order(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -167,7 +207,9 @@ async def view_order(callback: CallbackQuery):
         f"📅 {o['created_at']}\n\n"
     )
     if o.get("comment"):
-        text += f"💬 Комментарий: <i>{o['comment']}</i>\n\n"
+        text += f"💬 Комментарий клиента: <i>{o['comment']}</i>\n\n"
+    if o.get("admin_comment"):
+        text += f"📝 Заметка админа: <i>{o['admin_comment']}</i>\n\n"
     if o.get("discount"):
         text += f"🎟 Промокод: <b>{o['promo']}</b> (-{o['discount']}%)\n\n"
     text += (
@@ -224,6 +266,109 @@ async def set_status(callback: CallbackQuery, bot: Bot):
         pass
 
 
+# ===== КОММЕНТАРИЙ АДМИНА К ЗАКАЗУ =====
+
+@router.callback_query(F.data.startswith("admin_comment:"))
+async def admin_comment_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    order_id = int(callback.data.split(":")[1])
+    await state.update_data(order_id=order_id)
+    await state.set_state(OrderComment.text)
+    try:
+        await callback.message.edit_text(
+            "📝 <b>Комментарий админа к заказу</b>\n\n"
+            "Это увидите только вы. Например: «перезвонить», «оплата при получении».\n\n"
+            "Отправьте «-» чтобы удалить комментарий.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        await callback.message.answer("Введите комментарий к заказу:")
+    await callback.answer()
+
+
+@router.message(OrderComment.text)
+async def admin_comment_save(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    order_id = data["order_id"]
+    comment = None if message.text.strip() == "-" else message.text.strip()
+    await update_order_comment(order_id, comment or "")
+    await state.clear()
+
+    o = await get_order_by_id(order_id)
+    if o:
+        text = (
+            f"📦 <b>Заказ #{o['id']}</b>\n\n"
+            f"👤 {o['full_name']} (@{o['username'] or 'нет'})\n"
+            f"🆔 <code>{o['user_id']}</code>\n"
+            f"📞 {o.get('phone', '—')}\n"
+            f"📅 {o['created_at']}\n\n"
+        )
+        if o.get("comment"):
+            text += f"💬 Комментарий клиента: <i>{o['comment']}</i>\n\n"
+        if o.get("admin_comment"):
+            text += f"📝 Заметка админа: <i>{o['admin_comment']}</i>\n\n"
+        if o.get("discount"):
+            text += f"🎟 Промокод: <b>{o['promo']}</b> (-{o['discount']}%)\n\n"
+        text += (
+            f"🛒 {o['items']}\n\n"
+            f"💰 Сумма: <b>{o['total']}₽</b>\n"
+            f"📌 Статус: <b>{o['status']}</b>"
+        )
+        try:
+            await message.answer(text, reply_markup=order_status_kb(order_id), parse_mode="HTML")
+        except Exception:
+            await message.answer("✅ Комментарий сохранён.", reply_markup=admin_menu_kb())
+    else:
+        await message.answer("✅ Комментарий сохранён.", reply_markup=admin_menu_kb())
+
+
+# ===== НАПИСАТЬ КЛИЕНТУ =====
+
+@router.callback_query(F.data.startswith("write_client:"))
+async def write_client_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    order_id = int(callback.data.split(":")[1])
+    order = await get_order_by_id(order_id)
+    if not order:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return    await state.update_data(user_id=order["user_id"])
+    await state.set_state(WriteClient.text)
+    try:
+        await callback.message.edit_text(
+            f"💬 <b>Написать клиенту</b>\n\n"
+            f"Кому: {order['full_name']} (@{order['username'] or '—'})\n\n"
+            f"Введите текст сообщения:",
+            parse_mode="HTML",
+        )
+    except Exception:
+        await callback.message.answer("Введите текст сообщения для клиента:")
+    await callback.answer()
+
+
+@router.message(WriteClient.text)
+async def write_client_send(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    user_id = data["user_id"]
+    await state.clear()
+    try:
+        await message.bot.send_message(
+            user_id,
+            f"💬 <b>Сообщение от магазина:</b>\n\n{message.text}",
+            parse_mode="HTML",
+        )
+        await message.answer("✅ Сообщение отправлено.", reply_markup=admin_menu_kb())
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить: {e}", reply_markup=admin_menu_kb())
+
+
+# ===== ЭКСПОРТ CSV =====
+
 @router.callback_query(F.data == "export_csv")
 async def export_orders_csv(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -236,14 +381,15 @@ async def export_orders_csv(callback: CallbackQuery):
     writer = csv.writer(output, delimiter=';')
     writer.writerow([
         "ID", "Дата", "Клиент", "Username", "User ID",
-        "Телефон", "Комментарий", "Товары", "Промокод",
-        "Скидка %", "Сумма", "Статус"
+        "Телефон", "Комментарий", "Заметка админа", "Товары",
+        "Промокод", "Скидка %", "Сумма", "Статус"
     ])
     for o in orders:
         writer.writerow([
             o["id"], o["created_at"], o["full_name"],
             o.get("username") or "", o["user_id"],
             o.get("phone") or "", o.get("comment") or "",
+            o.get("admin_comment") or "",
             (o["items"] or "").replace("\n", " | "),
             o.get("promo") or "", o.get("discount") or 0,
             o["total"], o["status"],
