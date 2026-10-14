@@ -13,13 +13,11 @@ from data.database import (
     get_orders, get_order_by_id, update_order_status, get_stats,
     add_product, get_products, get_product_by_id, update_product, delete_product,
     get_clients, count_clients, set_setting, get_setting, count_products,
-    add_promo, get_all_promos, delete_promo, get_all_orders,
+    get_all_orders,
 )
 
 router = Router()
 
-
-# ===== СОСТОЯНИЯ =====
 
 class AddProduct(StatesGroup):
     category = State()
@@ -48,17 +46,9 @@ class EditSetting(StatesGroup):
     value = State()
 
 
-class PromoAdd(StatesGroup):
-    code = State()
-    discount = State()
-    uses = State()
-
-
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-
-# ===== ГЛАВНОЕ МЕНЮ =====
 
 def admin_menu_kb():
     b = InlineKeyboardBuilder()
@@ -102,8 +92,6 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
         )
     await callback.answer()
 
-
-# ===== ЗАКАЗЫ =====
 
 def orders_filter_kb():
     b = InlineKeyboardBuilder()
@@ -164,25 +152,16 @@ async def show_orders(callback: CallbackQuery):
     status = callback.data.split(":")[1]
     status = None if status == "all" else status
     orders = await get_orders(30, status)
-
     if not orders:
         try:
-            await callback.message.edit_text(
-                "📭 Заказов нет.",
-                reply_markup=orders_filter_kb(),
-            )
+            await callback.message.edit_text("📭 Заказов нет.", reply_markup=orders_filter_kb())
         except Exception:
             pass
         await callback.answer()
         return
-
     title = f"📦 <b>Заказы ({status or 'все'}):</b>\n\nВсего: {len(orders)}"
     try:
-        await callback.message.edit_text(
-            title,
-            reply_markup=orders_list_kb(orders),
-            parse_mode="HTML",
-        )
+        await callback.message.edit_text(title, reply_markup=orders_list_kb(orders), parse_mode="HTML")
     except Exception:
         pass
     await callback.answer()
@@ -197,7 +176,6 @@ async def view_order(callback: CallbackQuery):
     if not o:
         await callback.answer("Заказ не найден", show_alert=True)
         return
-
     text = (
         f"📦 <b>Заказ #{o['id']}</b>\n\n"
         f"👤 {o['full_name']} (@{o['username'] or 'нет'})\n"
@@ -214,7 +192,6 @@ async def view_order(callback: CallbackQuery):
         f"💰 Сумма: <b>{o['total']}₽</b>\n"
         f"📌 Статус: <b>{o['status']}</b>"
     )
-
     try:
         await callback.message.edit_text(text, reply_markup=order_status_kb(order_id), parse_mode="HTML")
     except Exception:
@@ -232,15 +209,12 @@ async def set_status(callback: CallbackQuery, bot: Bot):
         return
     _, status, order_id = callback.data.split(":")
     order_id_int = int(order_id)
-
     order = await get_order_by_id(order_id_int)
     if not order:
         await callback.answer("Заказ не найден", show_alert=True)
         return
-
     old_status = order["status"]
     await update_order_status(order_id_int, status)
-
     if old_status != status:
         status_texts = {
             "Принят": "✅ Ваш заказ принят! Флорист приступил к сборке.",
@@ -252,44 +226,20 @@ async def set_status(callback: CallbackQuery, bot: Bot):
         try:
             await bot.send_message(
                 order["user_id"],
-                f"<b>Заказ #{order_id_int}</b>\n\n{text}\n\n"
-                f"💰 Сумма: <b>{order['total']}₽</b>",
+                f"<b>Заказ #{order_id_int}</b>\n\n{text}\n\n💰 Сумма: <b>{order['total']}₽</b>",
                 parse_mode="HTML",
             )
         except Exception:
             pass
-
-    # Перерисовываем карточку заказа
-    o = await get_order_by_id(order_id_int)
-    if o:
-        text = (
-            f"📦 <b>Заказ #{o['id']}</b>\n\n"
-            f"👤 {o['full_name']} (@{o['username'] or 'нет'})\n"
-            f"🆔 <code>{o['user_id']}</code>\n"
-            f"📞 {o.get('phone', '—')}\n"
-            f"📅 {o['created_at']}\n\n"
-        )
-        if o.get("comment"):
-            text += f"💬 Комментарий: <i>{o['comment']}</i>\n\n"
-        if o.get("discount"):
-            text += f"🎟 Промокод: <b>{o['promo']}</b> (-{o['discount']}%)\n\n"
-        text += (
-            f"🛒 {o['items']}\n\n"
-            f"💰 Сумма: <b>{o['total']}₽</b>\n"
-            f"📌 Статус: <b>{o['status']}</b>"
-        )
-        try:
-            await callback.message.edit_text(text, reply_markup=order_status_kb(order_id_int), parse_mode="HTML")
-        except Exception:
-            pass
-
+    try:
+        await view_order(callback)
+    except Exception:
+        pass
     try:
         await callback.answer(f"Статус: {status}")
     except Exception:
         pass
 
-
-# ===== ЭКСПОРТ В CSV =====
 
 @router.callback_query(F.data == "export_csv")
 async def export_orders_csv(callback: CallbackQuery):
@@ -299,7 +249,6 @@ async def export_orders_csv(callback: CallbackQuery):
     if not orders:
         await callback.answer("Заказов нет для экспорта", show_alert=True)
         return
-
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
     writer.writerow([
@@ -309,23 +258,15 @@ async def export_orders_csv(callback: CallbackQuery):
     ])
     for o in orders:
         writer.writerow([
-            o["id"],
-            o["created_at"],
-            o["full_name"],
-            o.get("username") or "",
-            o["user_id"],
-            o.get("phone") or "",
-            o.get("comment") or "",
+            o["id"], o["created_at"], o["full_name"],
+            o.get("username") or "", o["user_id"],
+            o.get("phone") or "", o.get("comment") or "",
             (o["items"] or "").replace("\n", " | "),
-            o.get("promo") or "",
-            o.get("discount") or 0,
-            o["total"],
-            o["status"],
+            o.get("promo") or "", o.get("discount") or 0,
+            o["total"], o["status"],
         ])
-
     csv_bytes = output.getvalue().encode("utf-8-sig")
     file = BufferedInputFile(csv_bytes, filename="orders.csv")
-
     await callback.message.answer_document(
         file,
         caption=f"📥 Экспорт заказов\n\nВсего: <b>{len(orders)}</b>",
@@ -333,8 +274,6 @@ async def export_orders_csv(callback: CallbackQuery):
     )
     await callback.answer("Файл отправлен!")
 
-
-# ===== ПОИСК ЗАКАЗА =====
 
 @router.callback_query(F.data == "admin_search")
 async def search_start(callback: CallbackQuery, state: FSMContext):
@@ -368,8 +307,6 @@ async def search_result(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=order_status_kb(o["id"]), parse_mode="HTML")
 
 
-# ===== СТАТИСТИКА =====
-
 @router.callback_query(F.data == "admin_stats")
 async def show_stats(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -392,8 +329,6 @@ async def show_stats(callback: CallbackQuery):
         pass
     await callback.answer()
 
-
-# ===== ТОВАРЫ =====
 
 def products_menu_kb():
     b = InlineKeyboardBuilder()
@@ -499,8 +434,6 @@ async def product_delete(callback: CallbackQuery):
     await product_list(callback)
 
 
-# --- РЕДАКТИРОВАНИЕ ТОВАРА ---
-
 @router.callback_query(F.data.startswith("prod_edit:"))
 async def product_edit(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -558,8 +491,6 @@ async def edit_description(message: Message, state: FSMContext):
     await message.answer("✅ Товар обновлён.", reply_markup=admin_menu_kb())
 
 
-# --- КАРТИНКА ТОВАРА ---
-
 @router.callback_query(F.data.startswith("prod_img:"))
 async def product_img_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -587,8 +518,6 @@ async def product_img_set(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Картинка обновлена.", reply_markup=admin_menu_kb())
 
-
-# --- ДОБАВЛЕНИЕ ТОВАРА ---
 
 @router.callback_query(F.data == "product_add")
 async def product_add_start(callback: CallbackQuery, state: FSMContext):
@@ -650,10 +579,7 @@ async def add_description(message: Message, state: FSMContext):
         return
     await state.update_data(description=message.text)
     await state.set_state(AddProduct.image)
-    await message.answer(
-        "🖼 Отправьте <b>картинку</b> или напишите «-» чтобы пропустить:",
-        parse_mode="HTML",
-    )
+    await message.answer("🖼 Отправьте <b>картинку</b> или напишите «-» чтобы пропустить:", parse_mode="HTML")
 
 
 @router.message(AddProduct.image, F.photo)
@@ -665,11 +591,8 @@ async def add_image(message: Message, state: FSMContext):
     path = f"images/new_{message.from_user.id}.jpg"
     await message.bot.download(message.photo[-1], destination=path)
     pid = await add_product(
-        category=data["category"],
-        name=data["name"],
-        price=data["price"],
-        description=data["description"],
-        image=path,
+        category=data["category"], name=data["name"],
+        price=data["price"], description=data["description"], image=path,
     )
     await state.clear()
     await message.answer(
@@ -685,11 +608,8 @@ async def add_no_image(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     pid = await add_product(
-        category=data["category"],
-        name=data["name"],
-        price=data["price"],
-        description=data["description"],
-        image=None,
+        category=data["category"], name=data["name"],
+        price=data["price"], description=data["description"], image=None,
     )
     await state.clear()
     await message.answer(
@@ -698,8 +618,6 @@ async def add_no_image(message: Message, state: FSMContext):
         parse_mode="HTML",
     )
 
-
-# ===== КЛИЕНТЫ / РАССЫЛКА =====
 
 @router.callback_query(F.data == "admin_clients")
 async def clients_menu(callback: CallbackQuery):
@@ -770,8 +688,6 @@ async def broadcast_send(message: Message, state: FSMContext):
     )
 
 
-# ===== ТЕКСТЫ БОТА =====
-
 @router.callback_query(F.data == "admin_texts")
 async def texts_menu(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -823,76 +739,3 @@ async def setting_save(message: Message, state: FSMContext):
     await set_setting(data["key"], message.text)
     await state.clear()
     await message.answer("✅ Сохранено.", reply_markup=admin_menu_kb())
-
-
-# ===== ПРОМОКОДЫ =====
-
-def promos_menu_kb():
-    b = InlineKeyboardBuilder()
-    b.button(text="➕ Создать промокод", callback_data="promo_add")
-    b.button(text="📋 Список промокодов", callback_data="promo_list")
-    b.button(text="⬅️ Назад", callback_data="admin_back")
-    b.adjust(1)
-    return b.as_markup()
-
-
-@router.callback_query(F.data == "admin_promos")
-async def promos_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    if not is_admin(callback.from_user.id):
-        return
-    try:
-        await callback.message.edit_text(
-            "🎟 <b>Промокоды</b>",
-            reply_markup=promos_menu_kb(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    await callback.answer()
-
-
-@router.callback_query(F.data == "promo_add")
-async def promo_add_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        return
-    await state.set_state(PromoAdd.code)
-    try:
-        await callback.message.edit_text("Введите код промокода (например, FLOWER10):")
-    except Exception:
-        await callback.message.answer("Введите код промокода (например, FLOWER10):")
-    await callback.answer()
-
-
-@router.message(PromoAdd.code)
-async def promo_add_code(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.update_data(code=message.text.strip().upper())
-    await state.set_state(PromoAdd.discount)
-    await message.answer("Введите размер скидки в % (только цифры):")
-
-
-@router.message(PromoAdd.discount)
-async def promo_add_discount(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    if not message.text.isdigit():
-        await message.answer("⚠️ Только цифры!")
-        return
-    await state.update_data(discount=int(message.text))
-    await state.set_state(PromoAdd.uses)
-    await message.answer("Сколько раз можно использовать? (цифры):")
-
-
-@router.message(PromoAdd.uses)
-async def promo_add_uses(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    if not message.text.isdigit():
-        await message.answer("⚠️ Только цифры!")
-        return
-    data = await state.get_data()
-    await add_promo(data["code"], data["discount"], int(message.text))
-    await state.clear()
-    await
