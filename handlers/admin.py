@@ -38,12 +38,13 @@ def admin_menu_kb():
     b = InlineKeyboardBuilder()
     b.button(text="📦 Заказы", callback_data="admin_orders")
     b.button(text="🛍 Товары", callback_data="admin_products")
+    b.button(text="📁 Категории", callback_data="admin_categories")
     b.button(text="📊 Статистика", callback_data="admin_stats")
     b.button(text="👥 Клиенты / Рассылка", callback_data="admin_clients")
     b.button(text="🔍 Поиск заказа", callback_data="admin_search")
     b.button(text="🎟 Промокоды", callback_data="admin_promos")
     b.button(text="📝 Тексты бота", callback_data="admin_texts")
-    b.adjust(2, 2, 1, 1, 1)
+    b.adjust(2, 2, 2, 1, 1)
     return b.as_markup()
 
 
