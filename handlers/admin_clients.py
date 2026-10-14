@@ -9,7 +9,7 @@ import io
 from config import ADMIN_IDS
 from data.database import (
     get_clients, get_client, update_client,
-    get_orders, search_clients,
+    get_orders, search_clients, update_client_tags,
 )
 
 router = Router()
@@ -49,7 +49,7 @@ def clients_menu_kb():
     return b.as_markup()
 
 
-@router.callback_query(F.data == "admin_clients")
+@("router.callback_query(F.data == "admin_clients")
 async def clients_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     if not is_admin(callback.from_user.id):
@@ -83,10 +83,12 @@ async def clients_list(callback: CallbackQuery):
     b = InlineKeyboardBuilder()
     for c in clients[:30]:
         flags = ""
-        if c.get("is_blacklisted"):
+        if c.getis_blacklisted"):
             flags += " 🚫"
         if c.get("birthday"):
             flags += " 🎂"
+        if c.get("tags"):
+            flags += f" [{c['tags']}]"
         b.button(
             text=f"{c['full_name']}{flags}",
             callback_data=f"client_view:{c['user_id']}"
@@ -146,6 +148,8 @@ async def client_search_result(message: Message, state: FSMContext):
             flags += " 🚫"
         if c.get("birthday"):
             flags += " 🎂"
+        if c.get("tags"):
+            flags += f" [{c['tags']}]"
         b.button(
             text=f"{c['full_name']} (@{c['username'] or '—'}){flags}",
             callback_data=f"client_view:{c['user_id']}"
@@ -161,7 +165,7 @@ async def client_search_result(message: Message, state: FSMContext):
     )
 
 
-# ===== ЭКСПОРТ КЛИЕНТОВ В CSV =====
+# ===== ЭКСПОРТ КЛИЕНТОВ =====
 
 @router.callback_query(F.data == "clients_export")
 async def clients_export(callback: CallbackQuery):
@@ -175,7 +179,7 @@ async def clients_export(callback: CallbackQuery):
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
     writer.writerow([
-        "User ID", "Имя", "Username", "День рождения",
+        "User ID", "Имя", "Username", "Теги", "День рождения",
         "Заметка", "В ЧС", "Последний визит"
     ])
     for c in clients:
@@ -183,6 +187,7 @@ async def clients_export(callback: CallbackQuery):
             c["user_id"],
             c["full_name"],
             c.get("username") or "",
+            c.get("tags") or "",
             c.get("birthday") or "",
             (c.get("note") or "").replace("\n", " "),
             "Да" if c.get("is_blacklisted") else "Нет",
@@ -221,6 +226,8 @@ async def client_view(callback: CallbackQuery):
         flags.append("🚫 В чёрном списке")
     if c.get("birthday"):
         flags.append(f"🎂 {c['birthday']}")
+    if c.get("tags"):
+        flags.append(f"🏷 {c['tags']}")
     flags_text = "\n".join(flags) if flags else "—"
 
     note = c.get("note") or "—"
@@ -238,6 +245,7 @@ async def client_view(callback: CallbackQuery):
     )
 
     b = InlineKeyboardBuilder()
+    b.button(text="🏷 Теги", callback_data=f"client_tags:{user_id}")
     b.button(text="📝 Заметка", callback_data=f"client_note:{user_id}")
     b.button(text="🎂 День рождения", callback_data=f"client_bd:{user_id}")
     if c.get("is_blacklisted"):
@@ -246,7 +254,7 @@ async def client_view(callback: CallbackQuery):
         b.button(text="🚫 В чёрный список", callback_data=f"client_block:{user_id}")
     b.button(text="📦 Заказы клиента", callback_data=f"client_orders:{user_id}")
     b.button(text="⬅️ К списку", callback_data="clients_list")
-    b.adjust(2, 2, 1, 1)
+    b.adjust(2, 2, 2, 1)
 
     try:
         await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
@@ -257,6 +265,76 @@ async def client_view(callback: CallbackQuery):
             pass
         await callback.message.answer(text, reply_markup=b.as_markup(), parse_mode="HTML")
     await callback.answer()
+
+
+# ===== ТЕГИ КЛИЕНТА =====
+
+def tags_kb(user_id: int, current_tags: str):
+    tags_list = ["VIP", "Постоянный", "Новый", "Проблемный", "Оптовый"]
+    current = set((current_tags or "").split(",")) if current_tags else set()
+    current.discard("")
+
+    b = InlineKeyboardBuilder()
+    for tag in tags_list:
+        mark = "✅ " if tag in current else ""
+        b.button(text=f"{mark}{tag}", callback_data=f"tag_toggle:{user_id}:{tag}")
+    b.button(text="❌ Очистить все", callback_data=f"tag_clear:{user_id}")
+    b.button(text="⬅️ Назад", callback_data=f"client_view:{user_id}")
+    b.adjust(2, 2, 1, 1, 1)
+    return b.as_markup()
+
+
+@router.callback_query(F.data.startswith("client_tags:"))
+async def client_tags(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    user_id = int(callback.data.split(":")[1])
+    c = await get_client(user_id)
+    if not c:
+        await callback.answer("Клиент не найден", show_alert=True)
+        return
+    try:
+        await callback.message.edit_text(
+            f"🏷 <b>Теги клиента {c['full_name']}</b>\n\n"
+            "Нажмите, чтобы включить/выключить тег:",
+            reply_markup=tags_kb(user_id, c.get("tags") or ""),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tag_toggle:"))
+async def tag_toggle(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    parts = callback.data.split(":")
+    user_id = int(parts[1])
+    tag = parts[2]
+
+    c = await get_client(user_id)
+    current = set((c.get("tags") or "").split(",")) if c.get("tags") else set()
+    current.discard("")
+
+    if tag in current:
+        current.remove(tag)
+    else:
+        current.add(tag)
+
+    new_tags = ",".join(sorted(current))
+    await update_client_tags(user_id, new_tags)
+    await client_tags(callback)
+
+
+@router.callback_query(F.data.startswith("tag_clear:"))
+async def tag_clear(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    user_id = int(callback.data.split(":")[1])
+    await update_client_tags(user_id, "")
+    await callback.answer("Теги очищены", show_alert=True)
+    await client_tags(callback)
 
 
 # ===== ЗАМЕТКА =====
