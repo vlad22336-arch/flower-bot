@@ -44,6 +44,7 @@ async def init_db():
                 full_name TEXT,
                 birthday TEXT,
                 note TEXT,
+                tags TEXT,
                 is_blacklisted INTEGER DEFAULT 0,
                 orders_count INTEGER DEFAULT 0,
                 total_spent INTEGER DEFAULT 0,
@@ -111,9 +112,7 @@ async def get_orders_by_period(days: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
-            SELECT * FROM orders
-            WHERE created_at >= DATE('now', ?)
-            ORDER BY id DESC
+            SELECT * FROM orders WHERE created_at >= DATE('now', ?) ORDER BY id DESC
         """, (f'-{days} days',))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -245,11 +244,8 @@ async def search_clients(query: str):
         q = f"%{query.lower()}%"
         cursor = await db.execute("""
             SELECT * FROM clients
-            WHERE LOWER(full_name) LIKE ?
-               OR LOWER(username) LIKE ?
-               OR CAST(user_id AS TEXT) LIKE ?
-            ORDER BY last_seen DESC
-            LIMIT 20
+            WHERE LOWER(full_name) LIKE ? OR LOWER(username) LIKE ? OR CAST(user_id AS TEXT) LIKE ?
+            ORDER BY last_seen DESC LIMIT 20
         """, (q, q, q))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -274,6 +270,12 @@ async def update_client(user_id, **kwargs):
             values.append(user_id)
             await db.execute(f"UPDATE clients SET {', '.join(fields)} WHERE user_id = ?", values)
             await db.commit()
+
+
+async def update_client_tags(user_id: int, tags: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE clients SET tags = ? WHERE user_id = ?", (tags, user_id))
+        await db.commit()
 
 
 async def count_clients():
@@ -368,6 +370,8 @@ async def migrate_db():
             await db.execute("ALTER TABLE clients ADD COLUMN birthday TEXT")
         if "note" not in cols:
             await db.execute("ALTER TABLE clients ADD COLUMN note TEXT")
+        if "tags" not in cols:
+            await db.execute("ALTER TABLE clients ADD COLUMN tags TEXT")
         if "is_blacklisted" not in cols:
             await db.execute("ALTER TABLE clients ADD COLUMN is_blacklisted INTEGER DEFAULT 0")
         if "orders_count" not in cols:
@@ -376,15 +380,6 @@ async def migrate_db():
             await db.execute("ALTER TABLE clients ADD COLUMN total_spent INTEGER DEFAULT 0")
 
         await db.commit()
-
-
-async def migrate_admin_comment():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("PRAGMA table_info(orders)")
-        cols = [row[1] for row in await cursor.fetchall()]
-        if "admin_comment" not in cols:
-            await db.execute("ALTER TABLE orders ADD COLUMN admin_comment TEXT")
-            await db.commit()
 
 
 # ===== АНАЛИТИКА =====
@@ -414,13 +409,49 @@ async def get_orders_by_days(days: int = 7):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT DATE(created_at), COUNT(*), COALESCE(SUM(total), 0)
-            FROM orders
-            WHERE created_at >= DATE('now', ?)
-            GROUP BY DATE(created_at)
-            ORDER BY DATE(created_at)
+            FROM orders WHERE created_at >= DATE('now', ?)
+            GROUP BY DATE(created_at) ORDER BY DATE(created_at)
         """, (f'-{days} days',))
         rows = await cursor.fetchall()
         return rows
+
+
+async def get_month_report():
+    """Отчёт за текущий месяц."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Заказы за месяц
+        cursor = await db.execute("""
+            SELECT COUNT(*), COALESCE(SUM(total), 0)
+            FROM orders
+            WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+        """)
+        count, total = await cursor.fetchone()
+
+        # Средний чек за месяц
+        avg = int(total / count) if count else 0
+
+        # Топ-5 товаров за месяц
+        cursor = await db.execute("""
+            SELECT items FROM orders
+            WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+        """)
+        rows = await cursor.fetchall()
+        counts = {}
+        for row in rows:
+            for line in (row[0] or "").split("\n"):
+                if "×" in line:
+                    name = line.split("×")[0].strip()
+                    counts[name] = counts.get(name, 0) + 1
+        top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        # Новых клиентов за месяц
+        cursor = await db.execute("""
+            SELECT COUNT(*) FROM clients
+            WHERE strftime('%Y-%m', last_seen) = strftime('%Y-%m', 'now')
+        """)
+        new_clients = (await cursor.fetchone())[0]
+
+        return count, total, avg, top, new_clients
 
 
 # ===== КАТЕГОРИИ =====
